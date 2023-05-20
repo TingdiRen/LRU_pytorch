@@ -6,13 +6,12 @@ import torch.nn.functional as F
 
 class LRU(nn.Module):
     def __init__(self, in_features, activation=torch.relu, r_min=0.9, r_max=0.999, use_bias=True,
-                 unroll=False, serial=False):
+                 unroll=False):
         super(LRU, self).__init__()
         self.hidden_size = in_features
         self.activation = activation
         self.use_bias = use_bias
         self.unroll = unroll  # The parallel algorithm will divide and conquer more if True
-        self.serial = serial
 
         self.i_dense = nn.Linear(in_features, in_features * 2, bias=use_bias)  # Extend to the complex C
         self.o_dense = nn.Linear(in_features * 2, in_features, bias=use_bias)  # Back to real R
