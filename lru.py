@@ -6,13 +6,12 @@ import torch.nn.functional as F
 
 class LRU(nn.Module):
     def __init__(self, in_features, activation=torch.relu, r_min=0.9, r_max=0.999, use_bias=True,
-                 unroll=False, serial=False):
+                 unroll=False):
         super(LRU, self).__init__()
         self.hidden_size = in_features
         self.activation = activation
         self.use_bias = use_bias
         self.unroll = unroll  # The parallel algorithm will divide and conquer more if True
-        self.serial = serial
 
         self.i_dense = nn.Linear(in_features, in_features * 2, bias=use_bias)  # Extend to the complex C
         self.o_dense = nn.Linear(in_features * 2, in_features, bias=use_bias)  # Back to real R
@@ -104,6 +103,28 @@ class LRU(nn.Module):
             y_t = self.activation(y_t)
         return x_t, y_t
 
+    @torch.no_grad()
+    def infer_steps(self, input_t, hidden_state_t_1=None):
+        u_t = self.i_dense(input_t)
+        u_t = torch.view_as_complex(u_t.view(u_t.size(0), u_t.size(1), u_t.size(2) // 2, 2))
+        params = torch.exp(self.params_log)
+        v, theta, gamma = params[0], params[1], params[2]
+
+        x_t_1 = torch.zeros((u_t.shape[0], u_t.shape[2])) if hidden_state_t_1 is None else hidden_state_t_1[:, -1]
+        lamb = torch.exp(torch.complex(-v, theta))
+        x_t = torch.zeros_like(u_t)
+        for i in range(u_t.shape[1]):
+            x_t_t = lamb * x_t_1 + u_t[:, i]
+            x_t_1 = x_t_t
+
+            x_t[:, i, :] = x_t_t
+
+        y_t = x_t * (gamma.to(torch.complex64) * 1j)  # Element-wise parameter defined in [arxiv] eq.(7)
+        y_t = self.complex_to_real_imag(y_t)
+        y_t = self.o_dense(y_t)
+        if self.activation is not None:
+            y_t = self.activation(y_t)
+        return x_t, y_t
 
 if __name__ == '__main__':
     torch.manual_seed(42)
@@ -111,17 +132,17 @@ if __name__ == '__main__':
               'unroll': True}
     model = LRU(**config)
     model.eval()
-    B, T, D = 11, 3, config['in_features']
+    B, T, D = 11, 15, config['in_features']
     u = torch.randn((B, T, D))
     # parallel infer
     y = model(u)
     # Serial infer
-    x1, y1 = model.infer_step(u[:, 0:1, :], None)
-    x2, y2 = model.infer_step(u[:, 1:2, :], x1)
-    x3, y3 = model.infer_step(u[:, 2:3, :], x2)
+    x1, y1 = model.infer_steps(u[:, 0:1, :], None)
+    x2, y2 = model.infer_steps(u[:, 1:3, :], x1)
+    x3, y3 = model.infer_steps(u[:, 3:15, :], x2)
 
     print(u.shape)
     print(y.shape)
-    print((y[:, 0:1, :] == y1).all())
-    print((y[:, 1:2, :] == y2).all())
-    print((y[:, 2:3, :] == y3).all())
+    print(abs((y[:, 0:1, :] - y1).detach().cpu().numpy().round(-5)).sum())
+    print(abs((y[:, 1:3, :] - y2).detach().cpu().numpy().round(-5)).sum())
+    print(abs((y[:, 3:15, :] - y3).detach().cpu().numpy().round(-5)).sum())
